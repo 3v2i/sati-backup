@@ -1,0 +1,82 @@
+name: SATI daily backup
+
+on:
+  schedule:
+    - cron: "15 3 * * *"   # cada día a las 03:15 UTC
+  workflow_dispatch:       # permite ejecutar manualmente
+
+permissions:
+  contents: write          # necesario para crear releases
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare workspace
+        run: |
+          mkdir work
+          echo "DATE=$(date +%F)" >> $GITHUB_ENV
+
+      - name: Download documents
+        run: |
+          set -e
+          urls=(
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=74bcaaac-1863-4a0f-83ef-8ff101135250"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=77b17740-4cee-49eb-8c77-1092a2f46f57"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=cc2390af-3f8a-40d7-adf7-66aae3f4af40"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=b683e243-4565-4cf8-a2e5-9dc81edf8214"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=79b96a7b-3280-426c-9dc8-3cd4cd1bc848"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=7e353fff-ceb3-4257-91a9-81391fa6cc71"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=8a4e63d3-89bb-4406-a5c9-82663dd6d1d8"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=26555a92-de1c-4e49-9a60-9b9dc5fdc287"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=98803b9d-c8fe-43a4-95b5-be4cf6626ac7"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=cfb68ee9-3c34-4411-8a86-167cae649328"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=61052781-35bd-41ed-8070-0eceaf102907"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=7d668ddc-2c17-4279-8a2e-611c0d964f71"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=338d2277-c3d8-4be5-91a1-01f97b7a40cb"
+            "https://publicsati.asuncion.gov.py/Public/PrintDocById?proceedingDocumentIntId=eaaaef14-885f-4aa6-b7e4-4b3d08457356"
+          )
+
+          echo "[]" > work/manifest.json
+
+          for url in "${urls[@]}"; do
+            id=$(echo "$url" | sed -n 's/.*proceedingDocumentIntId=\(.*\)/\1/p')
+            file="work/$id.pdf"
+
+            curl -fsSL "$url" -o "$file"
+
+            sha256=$(sha256sum "$file" | awk '{print $1}')
+
+            jq \
+              --arg id "$id" \
+              --arg url "$url" \
+              --arg sha "$sha256" \
+              '. += [{"id":$id,"url":$url,"sha256":$sha}]' \
+              work/manifest.json > work/tmp.json
+
+            mv work/tmp.json work/manifest.json
+          done
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Sign manifest
+        run: |
+          gpg --batch --yes --armor --detach-sign work/manifest.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: backup-${{ env.DATE }}
+          name: Backup SATI ${{ env.DATE }}
+          body: |
+            Backup automático diario de documentos públicos SATI.
+            Incluye PDFs individuales y manifest.json con hashes SHA-256 firmados.
+          files: |
+            work/*.pdf
+            work/manifest.json
+            work/manifest.json.asc
